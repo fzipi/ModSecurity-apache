@@ -117,6 +117,23 @@ static const char *msc_config_load_rules_remote(cmd_parms *cmd, void *_cnf,
     return NULL;
 }
 
+/*
+ * msc_create_rules_set() heap-allocates a RulesSet outside of any APR
+ * pool. Tie its lifetime to the config pool it was created for, so a
+ * graceful restart (which tears down the previous generation's config
+ * pool) frees it instead of leaking it -- see issue #82.
+ */
+static apr_status_t msc_rules_set_cleanup(void *data)
+{
+    if (data != NULL)
+    {
+        msc_rules_cleanup(data);
+    }
+
+    return APR_SUCCESS;
+}
+
+
 void *msc_hook_create_config_directory(apr_pool_t *mp, char *path)
 {
     msc_conf_t *cnf = NULL;
@@ -132,6 +149,11 @@ void *msc_hook_create_config_directory(apr_pool_t *mp, char *path)
 #endif
 
     cnf->rules_set = msc_create_rules_set();
+    if (cnf->rules_set != NULL)
+    {
+        apr_pool_cleanup_register(mp, cnf->rules_set, msc_rules_set_cleanup,
+            apr_pool_cleanup_null);
+    }
     if (path != NULL)
     {
         cnf->name_for_debug = strdup(path);
