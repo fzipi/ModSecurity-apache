@@ -36,6 +36,8 @@ void modsecurity_log_cb(void *log, const void* data)
 int process_intervention (Transaction *t, request_rec *r)
 {
     ModSecurityIntervention intervention;
+    int status = N_INTERVENTION_STATUS;
+
     intervention.status = N_INTERVENTION_STATUS;
     intervention.url = NULL;
     intervention.log = NULL;
@@ -48,27 +50,32 @@ int process_intervention (Transaction *t, request_rec *r)
         return N_INTERVENTION_STATUS;
     }
 
-    if (intervention.log == NULL)
-    {
-        intervention.log = "(no log message was specified)";
-    }
-
     if (intervention.status == 301 || intervention.status == 302
         ||intervention.status == 303 || intervention.status == 307)
     {
         if (intervention.url != NULL)
         {
-            apr_table_setn(r->headers_out, "Location", intervention.url);
-            return HTTP_MOVED_TEMPORARILY;
+            /* apr_table_set() copies the value into r->pool, unlike
+             * apr_table_setn(), so the heap string msc_intervention()
+             * handed us can still be freed below. */
+            apr_table_set(r->headers_out, "Location", intervention.url);
+            status = HTTP_MOVED_TEMPORARILY;
         }
     }
 
-    if (intervention.status != N_INTERVENTION_STATUS)
+    if (status == N_INTERVENTION_STATUS && intervention.status != N_INTERVENTION_STATUS)
     {
-        return intervention.status;
+        status = intervention.status;
     }
 
-    return N_INTERVENTION_STATUS;
+    /* msc_intervention() heap-allocates url/log for the caller to free
+     * (see libmodsecurity's intervention::free() in intervention.h);
+     * this connector never did, leaking one allocation per blocked
+     * request. */
+    free(intervention.url);
+    free(intervention.log);
+
+    return status;
 }
 
 
