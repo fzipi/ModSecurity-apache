@@ -150,7 +150,7 @@ SecRule ARGS:test "@contains evil" \
 
 # Test rule for request body
 SecRule REQUEST_BODY "@rx malicious" \
-    "id:1002,phase:2,deny,status:488,msg:'Request body rule triggered'"
+    "id:1002,phase:2,deny,status:403,msg:'Request body rule triggered'"
 EOF
 
 # Configure Apache with ModSecurity

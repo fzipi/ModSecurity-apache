@@ -89,11 +89,11 @@ fi
 echo -n "Testing: Large POST with evil content ... "
 large_evil_data="A$(head -c 9000 /dev/zero | tr '\0' 'A')malicious"
 actual_status=$(curl -s -o /dev/null -w "%{http_code}" -X POST -d "$large_evil_data" "$BASEURL/")
-if [ "$actual_status" = "488" ]; then
+if [ "$actual_status" = "403" ]; then
     echo -e "${GREEN}PASS${NC} (got $actual_status - rule fired correctly on multi-bucket body)"
     PASSED=$((PASSED + 1))
 else
-    echo -e "${RED}FAIL${NC} (expected 488, got $actual_status - this tests the request body processing fix!)"
+    echo -e "${RED}FAIL${NC} (expected 403, got $actual_status - this tests the request body processing fix!)"
     FAILED=$((FAILED + 1))
 fi
 
