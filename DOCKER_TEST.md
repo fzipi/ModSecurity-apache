@@ -102,3 +102,9 @@ Test 6 additionally reports the request-body phase count described above.
 The recommended ModSecurity configuration is copied out of the same
 libmodsecurity source tree that was built, so it cannot drift from the
 version in the image.
+
+## See also
+
+- Valgrind memcheck + helgrind soak of the running module, including
+  periodic graceful restarts (the operation issue #82 reports leaking
+  memory): `tools/soak.sh`, built via `Dockerfile.fuzz`.
