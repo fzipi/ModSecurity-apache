@@ -51,6 +51,7 @@ typedef struct
 {
     request_rec *r;
     Transaction *t;
+    int request_body_processed;  /* Flag to track if body was processed */
 } msc_t;
 
 

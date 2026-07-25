@@ -145,6 +145,8 @@ static msc_t *create_tx_context(request_rec *r) {
     }
 
     msr->r = r;
+    msr->request_body_processed = 0;  /* Initialize flag */
+
     unique_id = getenv("UNIQUE_ID");
     if (unique_id != NULL && strlen(unique_id) > 0) {
         msr->t = msc_new_transaction_with_id(msc_apache->modsec,
@@ -365,17 +367,17 @@ static int hook_request_late(request_rec *r)
     /* Find the transaction context and make sure
      * we are supposed to proceed.
      */
-#ifdef REQUEST_EARLY
     msr = retrieve_tx_context(r);
-#else
-    msr = create_tx_context(r);
-#endif
     if (msr == NULL)
     {
-        /* If we can't find the context that probably means it's
-         * a subrequest that was not initiated from the outside.
+        /* Context should have been created by hook_insert_filter,
+         * but create it now if it doesn't exist for some reason.
          */
-        return DECLINED;
+        msr = create_tx_context(r);
+        if (msr == NULL)
+        {
+            return DECLINED;
+        }
     }
 
 #ifdef LATE_CONNECTION_PROCESS
@@ -400,7 +402,37 @@ static int hook_request_late(request_rec *r)
 #endif
 
 
+    /* Set up to read the request body.
+     * This is necessary to trigger the input filter which buffers the body.
+     */
+    int rc = ap_setup_client_block(r, REQUEST_CHUNKED_ERROR);
+    if (rc != OK)
+    {
+        return rc;
+    }
+
+    /* If there's a request body, read it to trigger the input filter */
+    if (ap_should_client_block(r))
+    {
+        char buffer[HUGE_STRING_LEN];
+        apr_off_t len;
+
+        /* Read body using the simpler ap_get_client_block API
+         * This should trigger our input filter for each chunk */
+        while ((len = ap_get_client_block(r, buffer, sizeof(buffer))) > 0)
+        {
+            /* The input filter intercepts this and appends to ModSecurity */
+            /* We don't need to do anything with the data here */
+        }
+    }
+
+    /* Process request body.
+     * The input filter has buffered body data during ap_get_brigade above.
+     * Now we process it. This handler can properly return HTTP status codes
+     * for interventions, unlike the input filter.
+     */
     msc_process_request_body(msr->t);
+
     it = process_intervention(msr->t, r);
     if (it != N_INTERVENTION_STATUS)
     {
@@ -448,11 +480,15 @@ static void hook_insert_filter(request_rec *r)
 {
     msc_t *msr = NULL;
 
-    /* Find the transaction context first. */
+    /* Find the transaction context, or create it if it doesn't exist yet. */
     msr = retrieve_tx_context(r);
     if (msr == NULL)
     {
-        return;
+        msr = create_tx_context(r);
+        if (msr == NULL)
+        {
+            return;
+        }
     }
 
 #if 1
@@ -571,7 +607,9 @@ static void msc_register_hooks(apr_pool_t *pool)
     /* still, we don't have location configuration yet. */
     ap_hook_process_connection(hook_connection_early, NULL, NULL, APR_HOOK_FIRST);
 
-    ap_hook_fixups(hook_request_late, fixups_beforeme_list, NULL, APR_HOOK_REALLY_FIRST);
+    /* Register as handler to read request body in the proper phase
+     * Don't use fixups - body reading must happen in handler phase */
+    ap_hook_handler(hook_request_late, NULL, NULL, APR_HOOK_REALLY_FIRST);
 
     /* Lets add the remaining hooks */
     ap_hook_insert_filter(hook_insert_filter, NULL, NULL, APR_HOOK_FIRST);
