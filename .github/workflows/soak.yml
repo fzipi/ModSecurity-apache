@@ -1,0 +1,78 @@
+name: Valgrind soak
+
+# Manual/scheduled only, not on every PR: a memcheck/helgrind soak runs
+# 10-50x slower than native and this connector has known open memory leaks
+# (see docs/TODO.md / issue #82), so this job is expected to fail until
+# those are fixed. It exists to keep the leak/race findings visible, not to
+# gate merges. See tools/soak.sh.
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: Seconds per soak run
+        default: "120"
+      concurrency:
+        description: Concurrent traffic workers
+        default: "8"
+  schedule:
+    - cron: "0 3 * * 1" # weekly, Monday 03:00 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  memcheck:
+    name: memcheck soak
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build base image
+        run: docker build -t modsec3-apache-test .
+
+      - name: Build soak image
+        run: docker build -f Dockerfile.fuzz -t modsec3-soak .
+
+      - name: Run memcheck soak
+        continue-on-error: true
+        env:
+          DURATION: ${{ github.event.inputs.duration || '120' }}
+          CONCURRENCY: ${{ github.event.inputs.concurrency || '8' }}
+        run: |
+          docker run --rm --cap-add=SYS_PTRACE \
+            -e USE_VALGRIND=1 \
+            modsec3-soak /usr/local/apache2/bin/httpd \
+            "$DURATION" "$CONCURRENCY"
+
+  helgrind:
+    name: helgrind soak
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build base image
+        run: docker build -t modsec3-apache-test .
+
+      - name: Build soak image
+        run: docker build -f Dockerfile.fuzz -t modsec3-soak .
+
+      - name: Run helgrind soak
+        continue-on-error: true
+        env:
+          DURATION: ${{ github.event.inputs.duration || '120' }}
+          CONCURRENCY: ${{ github.event.inputs.concurrency || '8' }}
+        run: |
+          docker run --rm --cap-add=SYS_PTRACE \
+            -e USE_HELGRIND=1 \
+            modsec3-soak /usr/local/apache2/bin/httpd \
+            "$DURATION" "$CONCURRENCY"

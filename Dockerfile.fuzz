@@ -1,0 +1,29 @@
+# Valgrind memcheck/helgrind soak image for the ModSecurity Apache connector.
+#
+# Kept separate from the main Dockerfile so the production-shaped test image
+# stays untouched; this just layers valgrind + tools/soak.sh on top of it.
+#
+# Build (base image first, then this one):
+#   docker build -t modsec3-apache-test .
+#   docker build -f Dockerfile.fuzz -t modsec3-soak .
+#
+# Run:
+#   docker run --rm --cap-add=SYS_PTRACE modsec3-soak /usr/local/apache2/bin/httpd 60 4
+#   USE_VALGRIND=1 docker run --rm -e USE_VALGRIND=1 --cap-add=SYS_PTRACE modsec3-soak \
+#       /usr/local/apache2/bin/httpd 120 8
+#   docker run --rm -e USE_HELGRIND=1 --cap-add=SYS_PTRACE modsec3-soak \
+#       /usr/local/apache2/bin/httpd 120 8
+#
+# See tools/soak.sh for what the soak actually does.
+
+ARG BASE_IMAGE=modsec3-apache-test
+FROM ${BASE_IMAGE}
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends valgrind curl && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY tools/soak.sh tools/valgrind.suppress /opt/soak/
+
+ENTRYPOINT ["/opt/soak/soak.sh"]
+CMD ["/usr/local/apache2/bin/httpd"]

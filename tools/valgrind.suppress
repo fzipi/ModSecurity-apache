@@ -1,0 +1,13 @@
+# Valgrind suppressions for the ModSecurity Apache connector soak (tools/soak.sh).
+#
+# APR pools intentionally free everything in one shot at pool destruction
+# rather than per-allocation, so memcheck's "still reachable" bucket is
+# expected noise, not a leak -- soak.sh only fails on "definitely lost" and
+# on tool ERROR SUMMARY counts, so this file should stay small: only add an
+# entry once you've confirmed via --gen-suppressions=all that it is genuine
+# third-party/runtime noise, not something the connector or libmodsecurity
+# should be freeing.
+#
+# Regenerate candidates with:
+#   USE_VALGRIND=1 tools/soak.sh <httpd-binary> 30 2
+#   valgrind --gen-suppressions=all ... (rerun interactively to capture)
