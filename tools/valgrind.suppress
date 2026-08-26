@@ -26,6 +26,23 @@
 # APR further down the stack -- connector frames appear in these stacks only
 # because the connector called into httpd, which is not evidence of a bug.
 #
+# Triage of what survives (30s soak, concurrency 4, ~50 contexts): every
+# instance with a connector frame at the top -- 106 of them across a run --
+# races on memory that helgrind reports as "in a rw- anonymous segment",
+# never a global, a BSS symbol, or a block with a live allocation stack.
+# The conflicting access is always httpd/APR connection machinery on another
+# thread: ap_bucket_eoc_create (from ap_start_lingering_close, i.e. tearing
+# down a *different* connection), __libc_read filling a brigade buffer,
+# apr_bucket_alloc, apr_table_copy. That is APR's allocator recycling a freed
+# block between mpm_event workers -- the "previous write" belongs to that
+# memory's earlier life, not to a concurrent access.
+#
+# No shared connector or libmodsecurity state (rules_set, the ModSecurity
+# instance, per-directory config) appeared on either side of any of them.
+# These are deliberately NOT suppressed: helgrind matches only the current
+# access, not the conflicting one, so a rule broad enough to hide them would
+# also hide a real connector race.
+#
 # Paths are wildcarded: the multiarch library directory differs between the
 # arm64 machines this was generated on and the x86_64 runners CI uses.
 
@@ -63,4 +80,36 @@
    p11-kit-mutex-destroy-at-exit
    Helgrind:Misc
    obj:*/libp11-kit.so*
+}
+
+# valgrind replaces memcpy/memset/strlen/memchr with its own interceptors, so
+# for those accesses frame 0 is vgpreload_helgrind and the code that actually
+# raced is frame 1. The entries above match frame 0 and never fire for them.
+# These pin frame 0 to the interceptor and frame 1 to the runtime, which keeps
+# them narrow: a connector race through memcpy has mod_security3.so at frame 1
+# and is still reported.
+
+{
+   httpd-core-race-via-intercept
+   Helgrind:Race
+   obj:*/vgpreload_helgrind*.so
+   obj:*/sbin/apache2
+}
+{
+   httpd-mpm-race-via-intercept
+   Helgrind:Race
+   obj:*/vgpreload_helgrind*.so
+   obj:*/apache2/modules/mod_mpm_*.so
+}
+{
+   apr-race-via-intercept
+   Helgrind:Race
+   obj:*/vgpreload_helgrind*.so
+   obj:*/libapr-1.so*
+}
+{
+   apr-util-race-via-intercept
+   Helgrind:Race
+   obj:*/vgpreload_helgrind*.so
+   obj:*/libaprutil-1.so*
 }
