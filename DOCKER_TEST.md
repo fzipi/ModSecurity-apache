@@ -51,7 +51,7 @@ issue #67, not a misconfiguration here. Two other signals are available:
 `test-connector.sh` uses the debug log to report how many times the
 request-body phase ran for a single large POST:
 
-```
+```text
 request-body phase invocations for that request: 26 (KNOWN BUG: expected 1, ...)
 ```
 
