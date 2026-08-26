@@ -268,8 +268,8 @@ fi
 if ls "$WORK"/logs/helgrind.* >/dev/null 2>&1; then
 	echo "--- helgrind summary (informational, not gating) ---"
 	grep -E 'ERROR SUMMARY' "$WORK"/logs/helgrind.* 2>/dev/null || true
-	echo "Residual contexts still need triage; most carry connector frames only"
-	echo "because the connector called into APR. See tools/valgrind.suppress."
+	echo "Residual contexts trace to APR recycling pool memory between mpm_event"
+	echo "workers, not to shared connector state. See tools/valgrind.suppress."
 	echo "Distinct racing frames that survived the suppressions:"
 	grep -A3 -E 'Possible data race' "$WORK"/logs/helgrind.* 2>/dev/null |
 		grep -oE 'at 0x[0-9A-F]+: .*' | sed 's/^at 0x[0-9A-F]*: //' |
