@@ -10,6 +10,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 BASEURL="http://localhost:8080"
+DEBUGLOG="${DEBUGLOG:-./logs/modsec_debug.log}"
 PASSED=0
 FAILED=0
 
@@ -51,7 +52,7 @@ for i in {1..30}; do
         echo ""
         break
     fi
-    if [ $i -eq 30 ]; then
+    if [ "$i" -eq 30 ]; then
         echo -e "${RED}Timeout waiting for Apache${NC}"
         exit 1
     fi
@@ -73,9 +74,9 @@ test_request "Request body rule (should block)" "$BASEURL/" "403" "POST" "data=m
 # Test 4: Normal POST (should work)
 test_request "Normal POST request" "$BASEURL/" "200" "POST" "data=normal"
 
-# Test 5: Large POST (tests bucket processing fix - multiple chunks)
+# Test 5: Large POST (body spans multiple buckets)
 echo -n "Testing: Large POST (multi-bucket) ... "
-large_data=$(head -c 10000 /dev/zero | tr '\0' 'A')
+large_data=$(head -c 100000 /dev/zero | tr '\0' 'A')
 actual_status=$(curl -s -o /dev/null -w "%{http_code}" -X POST -d "$large_data" "$BASEURL/")
 if [ "$actual_status" = "200" ]; then
     echo -e "${GREEN}PASS${NC} (got $actual_status)"
@@ -85,16 +86,31 @@ else
     FAILED=$((FAILED + 1))
 fi
 
-# Test 6: Large POST with malicious content (should be blocked, tests our fix)
+# Test 6: Large POST with malicious content spanning multiple buckets
 echo -n "Testing: Large POST with evil content ... "
-large_evil_data="A$(head -c 9000 /dev/zero | tr '\0' 'A')malicious"
+: > "$DEBUGLOG" 2>/dev/null || true
+large_evil_data="$(head -c 100000 /dev/zero | tr '\0' 'A')malicious"
 actual_status=$(curl -s -o /dev/null -w "%{http_code}" -X POST -d "$large_evil_data" "$BASEURL/")
 if [ "$actual_status" = "403" ]; then
-    echo -e "${GREEN}PASS${NC} (got $actual_status - rule fired correctly on multi-bucket body)"
+    echo -e "${GREEN}PASS${NC} (got $actual_status - rule fired on multi-bucket body)"
     PASSED=$((PASSED + 1))
 else
-    echo -e "${RED}FAIL${NC} (expected 403, got $actual_status - this tests the request body processing fix!)"
+    echo -e "${RED}FAIL${NC} (expected 403, got $actual_status)"
     FAILED=$((FAILED + 1))
+fi
+
+# How many times did phase 2 actually run for that one request? A correct
+# connector assembles the whole body and evaluates it once; the current one
+# re-runs the phase for every bucket. Reported rather than asserted because
+# the fix lives in a follow-up branch and this suite has to stay green here.
+# ponytail: diagnostic only -- turn into a hard "-eq 1" assertion in the PR
+# that lands the request-body fix, otherwise the regression can silently return.
+body_phases=$(grep -c "Starting phase REQUEST_BODY" "$DEBUGLOG" 2>/dev/null || echo "?")
+echo -n "  request-body phase invocations for that request: $body_phases "
+if [ "$body_phases" = "1" ]; then
+    echo -e "${GREEN}(correct - evaluated once)${NC}"
+else
+    echo -e "${YELLOW}(KNOWN BUG: expected 1, body re-evaluated per bucket)${NC}"
 fi
 
 echo ""
@@ -108,16 +124,16 @@ echo ""
 if [ $FAILED -eq 0 ]; then
     echo -e "${GREEN}All tests passed!${NC}"
     echo ""
-    echo "Key fixes verified:"
-    echo "  ✓ Request body processing (rules fire once, not per bucket)"
-    echo "  ✓ Status codes work correctly (403 is returned)"
-    echo "  ✓ Multi-bucket POST requests processed correctly"
+    echo "Verified:"
+    echo "  - Rules fire on query string and request body"
+    echo "  - Blocking returns the configured status (403)"
+    echo "  - Multi-bucket POST bodies are assembled and matched"
     exit 0
 else
     echo -e "${RED}Some tests failed!${NC}"
     echo ""
     echo "Check logs:"
-    echo "  docker logs modsec3-apache-test"
-    echo "  cat logs/error.log"
+    echo "  docker compose logs"
+    echo "  cat logs/error.log logs/modsec_debug.log"
     exit 1
 fi

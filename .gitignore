@@ -5,3 +5,6 @@
 .libs/*
 src/.libs/*
 t/htdocs/index.html
+
+# Test harness output (docker-compose bind mount)
+logs/

@@ -34,15 +34,16 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build image
-        run: docker build -t modsec3-apache-test .
-
-      - name: Run container
-        run: docker run -d -p 8080:8080 --name modsec3-test modsec3-apache-test
+      # Compose is the only supported way to run this: the smoke tests read
+      # the ModSecurity debug log through the bind mount it sets up.
+      - name: Build and start container
+        run: docker compose up -d --build
 
       - name: Run smoke tests
         run: ./test-connector.sh
 
       - name: Show container logs
         if: always()
-        run: docker logs modsec3-test
+        run: |
+          docker compose logs
+          cat logs/modsec_debug.log 2>/dev/null | tail -50 || true

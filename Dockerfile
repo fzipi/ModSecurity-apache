@@ -1,9 +1,10 @@
-# Dockerfile for testing ModSecurity v3 Apache Connector with fixes
-# Multi-stage build: libmodsecurity3, Apache, and the connector
+# Dockerfile for testing the ModSecurity v3 Apache connector.
+# Builds libmodsecurity3 and the connector against Debian's Apache.
 
 FROM debian:bookworm-slim AS builder
 
-# Install build dependencies
+ARG MODSECURITY_VERSION=v3.0.16
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         # Build essentials
@@ -14,28 +15,24 @@ RUN apt-get update && \
         libtool \
         pkg-config \
         git \
-        wget \
-        # Apache build dependencies
-        libapr1-dev \
-        libaprutil1-dev \
-        libpcre2-dev \
-        libssl-dev \
-        zlib1g-dev \
+        # Apache module build support (apxs2, plus the httpd binary configure probes for)
+        apache2 \
+        apache2-dev \
         # libmodsecurity dependencies
         libcurl4-openssl-dev \
         libyajl-dev \
         libgeoip-dev \
         liblmdb-dev \
         libxml2-dev \
-        libpcre3-dev \
+        libpcre2-dev \
         libmaxminddb-dev \
         libfuzzy-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# Stage 1: Build libmodsecurity v3
+# Build libmodsecurity v3 from a pinned release tag
 WORKDIR /build
 
-RUN git clone --depth 1 --branch v3/master \
+RUN git clone --depth 1 --branch ${MODSECURITY_VERSION} \
         https://github.com/owasp-modsecurity/ModSecurity.git libmodsecurity && \
     cd libmodsecurity && \
     git submodule update --init --recursive && \
@@ -50,204 +47,95 @@ RUN git clone --depth 1 --branch v3/master \
     make install && \
     ldconfig
 
-# Stage 2: Build Apache HTTP Server
-WORKDIR /build
-
-ARG APACHE_VERSION=2.4.62
-
-RUN wget -O httpd.tar.gz \
-        https://archive.apache.org/dist/httpd/httpd-${APACHE_VERSION}.tar.gz && \
-    tar -xzf httpd.tar.gz && \
-    cd httpd-${APACHE_VERSION} && \
-    ./configure \
-        --prefix=/usr/local/apache2 \
-        --enable-mods-shared=all \
-        --enable-mpms-shared="prefork worker event" \
-        --enable-so \
-        --enable-rewrite \
-        --enable-ssl \
-        --enable-proxy \
-        --enable-proxy-http \
-        --with-mpm=event && \
-    make -j$(nproc) && \
-    make install
-
-# Stage 3: Build ModSecurity Apache Connector (with our fixes)
+# Build the connector; configure finds Debian's apxs2 on its own
 WORKDIR /build/connector
 
-# Copy the fixed connector code
 COPY . .
 
 RUN ./autogen.sh && \
-    ./configure \
-        --with-apxs=/usr/local/apache2/bin/apxs \
-        --with-libmodsecurity=/usr/local/modsecurity && \
+    ./configure --with-libmodsecurity=/usr/local/modsecurity && \
     make -j$(nproc) && \
     make install
 
-# Stage 4: Create runtime image
 FROM debian:bookworm-slim
 
-LABEL maintainer="ModSecurity Apache Connector Test"
-LABEL description="Apache with ModSecurity v3 connector (with fixes)"
+LABEL description="Apache with the ModSecurity v3 connector, for smoke testing"
 
-# Install runtime dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        ca-certificates \
+        apache2 \
         wget \
         libcurl4 \
         libyajl2 \
         libgeoip1 \
         liblmdb0 \
         libxml2 \
-        libpcre3 \
+        libpcre2-8-0 \
         libmaxminddb0 \
-        libfuzzy2 \
-        libapr1 \
-        libaprutil1 \
-        libaprutil1-dbd-sqlite3 \
-        libaprutil1-ldap && \
+        libfuzzy2 && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy libmodsecurity from builder
 COPY --from=builder /usr/local/modsecurity /usr/local/modsecurity
+COPY --from=builder /usr/lib/apache2/modules/mod_security3.so /usr/lib/apache2/modules/
 
-# Copy Apache from builder
-COPY --from=builder /usr/local/apache2 /usr/local/apache2
-
-# Update library cache
 RUN echo "/usr/local/modsecurity/lib" > /etc/ld.so.conf.d/modsecurity.conf && \
     ldconfig
 
-# Create necessary directories
-RUN mkdir -p \
-        /var/log/apache2 \
-        /var/log/modsecurity/audit \
-        /tmp/modsecurity/data \
-        /tmp/modsecurity/tmp \
-        /tmp/modsecurity/upload \
-        /etc/modsecurity && \
-    chown -R www-data:www-data \
-        /var/log/apache2 \
-        /var/log/modsecurity \
-        /tmp/modsecurity
+# Take the recommended config from the same source tree we built, so it can
+# never drift from the pinned libmodsecurity version.
+COPY --from=builder /build/libmodsecurity/modsecurity.conf-recommended /etc/modsecurity/modsecurity.conf
+COPY --from=builder /build/libmodsecurity/unicode.mapping /etc/modsecurity/unicode.mapping
 
-# Download recommended ModSecurity configuration
-WORKDIR /etc/modsecurity
+RUN sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/modsecurity/modsecurity.conf
 
-RUN wget -O modsecurity.conf \
-        https://raw.githubusercontent.com/owasp-modsecurity/ModSecurity/v3/master/modsecurity.conf-recommended && \
-    wget -O unicode.mapping \
-        https://raw.githubusercontent.com/owasp-modsecurity/ModSecurity/v3/master/unicode.mapping && \
-    sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' modsecurity.conf
-
-# Create a simple test configuration
 RUN cat > /etc/modsecurity/test-rules.conf << 'EOF'
-# Test rule to verify ModSecurity is working
+# Fires on the query string, to check phase 1 / ARGS handling
 SecRule ARGS:test "@contains evil" \
     "id:1001,phase:2,deny,status:403,msg:'Test rule triggered'"
 
-# Test rule for request body
+# Fires on the request body, to check that a multi-bucket body is assembled
+# and evaluated exactly once
 SecRule REQUEST_BODY "@rx malicious" \
     "id:1002,phase:2,deny,status:403,msg:'Request body rule triggered'"
+
+# The connector does not write denied requests to the Apache error log
+# (upstream issue #67), and the audit log records one entry per transaction
+# rather than one per rule evaluation. The debug log is the only signal that
+# shows how many times a phase actually ran, which is what the request-body
+# tests need to check.
+SecDebugLog /var/log/apache2/modsec_debug.log
+SecDebugLogLevel 4
+SecAuditLog /var/log/apache2/modsec_audit.log
 EOF
 
-# Configure Apache with ModSecurity
-RUN cat > /usr/local/apache2/conf/extra/modsecurity.conf << 'EOF'
-# Load ModSecurity module
-LoadModule security3_module modules/mod_security3.so
+RUN cat > /etc/apache2/mods-available/security3.load << 'EOF'
+LoadModule security3_module /usr/lib/apache2/modules/mod_security3.so
 
-# ModSecurity configuration
 <IfModule security3_module>
-    # Enable ModSecurity
     modsecurity on
-
-    # Load base configuration
     modsecurity_rules_file /etc/modsecurity/modsecurity.conf
-
-    # Load test rules
     modsecurity_rules_file /etc/modsecurity/test-rules.conf
 </IfModule>
 EOF
 
-# Update main Apache configuration
-RUN sed -i \
-        -e 's/^Listen 80$/Listen 8080/' \
-        -e '/^#Include conf\/extra\/httpd-mpm.conf/s/^#//' \
-        /usr/local/apache2/conf/httpd.conf && \
-    echo "Include conf/extra/modsecurity.conf" >> /usr/local/apache2/conf/httpd.conf && \
-    echo "ServerName localhost" >> /usr/local/apache2/conf/httpd.conf
+RUN a2enmod security3 && \
+    sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf && \
+    sed -i 's/<VirtualHost \*:80>/<VirtualHost *:8080>/' \
+        /etc/apache2/sites-available/000-default.conf && \
+    echo "ServerName localhost" >> /etc/apache2/apache2.conf
 
-# Create a simple test page
-RUN mkdir -p /usr/local/apache2/htdocs/test && \
-    cat > /usr/local/apache2/htdocs/test/index.html << 'EOF'
-<!DOCTYPE html>
-<html>
-<head><title>ModSecurity Test</title></head>
-<body>
-    <h1>ModSecurity v3 Apache Connector Test</h1>
-    <p>If you see this page, Apache is working!</p>
-
-    <h2>Test Cases:</h2>
-    <ul>
-        <li>Normal request: <a href="/">Should work</a></li>
-        <li>Trigger test rule: <a href="/?test=evil">Should be blocked (403)</a></li>
-        <li>POST with evil body: Use curl to test request body processing</li>
-    </ul>
-
-    <h2>Test Commands:</h2>
-    <pre>
-# Test normal request
-curl http://localhost:8080/
-
-# Test query string rule (should return 403)
-curl http://localhost:8080/?test=evil
-
-# Test request body rule (should return 403)
-curl -X POST http://localhost:8080/ -d "data=malicious"
-
-# Test large POST (tests bucket processing fix)
-curl -X POST http://localhost:8080/ -d "$(head -c 10000 /dev/urandom | base64)"
-    </pre>
-</body>
-</html>
-EOF
-
-# Create startup script
 RUN cat > /usr/local/bin/start.sh << 'EOF'
 #!/bin/bash
 set -e
 
-echo "Starting Apache with ModSecurity v3..."
-echo ""
-echo "Configuration:"
-echo "  Apache: /usr/local/apache2"
-echo "  ModSecurity lib: /usr/local/modsecurity"
-echo "  Rules: /etc/modsecurity/"
-echo "  Logs: /var/log/apache2/"
-echo ""
-echo "Test the connector:"
-echo "  curl http://localhost:8080/"
-echo "  curl http://localhost:8080/?test=evil  # Should be blocked"
-echo ""
-
-# Check if ModSecurity module loads
-if ! /usr/local/apache2/bin/apachectl -M 2>&1 | grep -q security3_module; then
+if ! apache2ctl -M 2>&1 | grep -q security3_module; then
     echo "ERROR: ModSecurity module not loaded!"
-    echo "Checking module:"
-    ls -la /usr/local/apache2/modules/mod_security3.so
-    echo ""
-    echo "Checking dependencies:"
-    ldd /usr/local/apache2/modules/mod_security3.so
+    ldd /usr/lib/apache2/modules/mod_security3.so
     exit 1
 fi
 
-echo "ModSecurity module loaded successfully!"
-echo ""
-
-# Start Apache in foreground
-exec /usr/local/apache2/bin/httpd -DFOREGROUND
+echo "ModSecurity module loaded, starting Apache on :8080"
+exec apache2ctl -DFOREGROUND
 EOF
 
 RUN chmod +x /usr/local/bin/start.sh

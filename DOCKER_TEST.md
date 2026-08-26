@@ -111,12 +111,12 @@ All 6 tests should pass:
   - Filter removal (correct function called)
   - Error handling (return values checked)
 
-## Files Modified
+## What this environment is for
 
-The following files contain our fixes:
-- `src/mod_security3.h` - Added `request_body_processed` flag
-- `src/mod_security3.c` - Initialize flag
-- `src/msc_filters.c` - Fixed request body processing, filter removal, error handling
-- `src/msc_utils.c` - Fixed status code bug
+The image builds libmodsecurity and the connector from source and runs a small
+rule set, so connector behaviour can be observed directly. It is a smoke-test
+harness, not a production configuration.
 
-See commit history or `/tmp/fixes_summary.md` for detailed changes.
+Rule evaluation is visible in `logs/modsec_debug.log`; denied requests do not
+appear in the Apache error log (upstream issue #67), and `logs/modsec_audit.log`
+records one entry per transaction rather than one per rule evaluation.
