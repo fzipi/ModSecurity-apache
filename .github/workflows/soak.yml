@@ -40,6 +40,9 @@ jobs:
       - name: Build soak image
         run: docker build -f Dockerfile.fuzz -t modsec3-soak .
 
+      # Non-gating for now: the connector has open leaks this soak correctly
+      # finds (issue #82's rules_set leak, and the per-request intervention
+      # leak). Drop continue-on-error once those are fixed.
       - name: Run memcheck soak
         continue-on-error: true
         env:
@@ -48,7 +51,7 @@ jobs:
         run: |
           docker run --rm --cap-add=SYS_PTRACE \
             -e USE_VALGRIND=1 \
-            modsec3-soak /usr/local/apache2/bin/httpd \
+            modsec3-soak /usr/sbin/apache2 \
             "$DURATION" "$CONCURRENCY"
 
   helgrind:
@@ -66,13 +69,15 @@ jobs:
       - name: Build soak image
         run: docker build -f Dockerfile.fuzz -t modsec3-soak .
 
+      # Gating: soak.sh reports helgrind findings without failing on them, so
+      # a non-zero exit here means a crash, a bad httpd exit, or a WAF verdict
+      # regression -- all of which should go red.
       - name: Run helgrind soak
-        continue-on-error: true
         env:
           DURATION: ${{ github.event.inputs.duration || '120' }}
           CONCURRENCY: ${{ github.event.inputs.concurrency || '8' }}
         run: |
           docker run --rm --cap-add=SYS_PTRACE \
             -e USE_HELGRIND=1 \
-            modsec3-soak /usr/local/apache2/bin/httpd \
+            modsec3-soak /usr/sbin/apache2 \
             "$DURATION" "$CONCURRENCY"
