@@ -8,11 +8,11 @@
 #   docker build -f Dockerfile.fuzz -t modsec3-soak .
 #
 # Run:
-#   docker run --rm --cap-add=SYS_PTRACE modsec3-soak /usr/local/apache2/bin/httpd 60 4
+#   docker run --rm --cap-add=SYS_PTRACE modsec3-soak /usr/sbin/apache2 60 4
 #   USE_VALGRIND=1 docker run --rm -e USE_VALGRIND=1 --cap-add=SYS_PTRACE modsec3-soak \
-#       /usr/local/apache2/bin/httpd 120 8
+#       /usr/sbin/apache2 120 8
 #   docker run --rm -e USE_HELGRIND=1 --cap-add=SYS_PTRACE modsec3-soak \
-#       /usr/local/apache2/bin/httpd 120 8
+#       /usr/sbin/apache2 120 8
 #
 # See tools/soak.sh for what the soak actually does.
 
@@ -26,4 +26,4 @@ RUN apt-get update && \
 COPY tools/soak.sh tools/valgrind.suppress /opt/soak/
 
 ENTRYPOINT ["/opt/soak/soak.sh"]
-CMD ["/usr/local/apache2/bin/httpd"]
+CMD ["/usr/sbin/apache2"]

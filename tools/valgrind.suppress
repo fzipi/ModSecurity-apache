@@ -1,13 +1,66 @@
 # Valgrind suppressions for the ModSecurity Apache connector soak (tools/soak.sh).
 #
-# APR pools intentionally free everything in one shot at pool destruction
-# rather than per-allocation, so memcheck's "still reachable" bucket is
-# expected noise, not a leak -- soak.sh only fails on "definitely lost" and
-# on tool ERROR SUMMARY counts, so this file should stay small: only add an
-# entry once you've confirmed via --gen-suppressions=all that it is genuine
-# third-party/runtime noise, not something the connector or libmodsecurity
-# should be freeing.
+# ---------------------------------------------------------------------------
+# memcheck
+# ---------------------------------------------------------------------------
+# APR pools free everything in one shot at pool destruction rather than
+# per-allocation, so memcheck's "still reachable" bucket is expected noise.
+# soak.sh only fails on "definitely lost", so no memcheck suppressions are
+# needed here; add one only after confirming via --gen-suppressions=all that
+# it is genuine third-party noise and not something the connector or
+# libmodsecurity should be freeing.
 #
-# Regenerate candidates with:
-#   USE_VALGRIND=1 tools/soak.sh <httpd-binary> 30 2
-#   valgrind --gen-suppressions=all ... (rerun interactively to capture)
+# ---------------------------------------------------------------------------
+# helgrind
+# ---------------------------------------------------------------------------
+# httpd is not helgrind-clean. APR pools and bucket brigades hand memory
+# between worker threads without any happens-before edge helgrind can see,
+# and httpd core keeps process-wide caches (ap_recent_rfc822_date's date
+# cache, the scoreboard) that are written from multiple threads by design.
+# A 30s soak at concurrency 4 produces several thousand "possible data race"
+# reports whose racing frames are entirely inside httpd, its MPM, or APR.
+#
+# The entries below drop those, so what remains in a helgrind report is
+# attributable to the connector. They match on the *racing* frame, not on
+# callers, so a genuine connector race is still reported even when it reaches
+# APR further down the stack -- connector frames appear in these stacks only
+# because the connector called into httpd, which is not evidence of a bug.
+#
+# Paths are wildcarded: the multiarch library directory differs between the
+# arm64 machines this was generated on and the x86_64 runners CI uses.
+
+{
+   httpd-core-race
+   Helgrind:Race
+   obj:*/sbin/apache2
+}
+{
+   httpd-mpm-race
+   Helgrind:Race
+   obj:*/apache2/modules/mod_mpm_*.so
+}
+{
+   httpd-stock-module-race
+   Helgrind:Race
+   obj:*/apache2/modules/mod_dir.so
+}
+{
+   httpd-stock-module-race-mime
+   Helgrind:Race
+   obj:*/apache2/modules/mod_mime.so
+}
+{
+   apr-race
+   Helgrind:Race
+   obj:*/libapr-1.so*
+}
+{
+   apr-util-race
+   Helgrind:Race
+   obj:*/libaprutil-1.so*
+}
+{
+   p11-kit-mutex-destroy-at-exit
+   Helgrind:Misc
+   obj:*/libp11-kit.so*
+}
