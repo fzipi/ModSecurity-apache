@@ -146,6 +146,7 @@ static msc_t *create_tx_context(request_rec *r) {
 
     msr->r = r;
     msr->request_body_processed = 0;  /* Initialize flag */
+    msr->body_replay_bb = apr_brigade_create(r->pool, r->connection->bucket_alloc);
 
     unique_id = getenv("UNIQUE_ID");
     if (unique_id != NULL && strlen(unique_id) > 0) {
@@ -424,6 +425,22 @@ static int hook_request_late(request_rec *r)
             /* The input filter intercepts this and appends to ModSecurity */
             /* We don't need to do anything with the data here */
         }
+
+        if (len == -1)
+        {
+            return HTTP_BAD_REQUEST;
+        }
+
+        /* ap_get_client_block() marks the classic client-block API as
+         * exhausted once it sees EOS (r->read_length becomes non-zero and
+         * r->remaining drops to 0), so a later handler calling
+         * ap_should_client_block()/ap_get_client_block() itself (e.g.
+         * mod_cgi) would see "no body" even though the input filter is
+         * holding a buffered copy ready to replay. Reset that bookkeeping
+         * so those handlers still read the body. (Chunked bodies never
+         * reach here: REQUEST_CHUNKED_ERROR above rejects them outright.) */
+        r->read_length = 0;
+        r->remaining = 1;
     }
 
     /* Process request body.
