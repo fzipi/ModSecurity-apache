@@ -156,7 +156,9 @@ void *msc_hook_create_config_directory(apr_pool_t *mp, char *path)
     }
     if (path != NULL)
     {
-        cnf->name_for_debug = strdup(path);
+        /* Pool-owned: this runs for every per-request config merge, and
+         * a strdup() here was never freed. */
+        cnf->name_for_debug = apr_pstrdup(mp, path);
     }
 #if 0
     ap_log_perror(APLOG_MARK, APLOG_STARTUP|APLOG_NOERRNO, 0, mp,

@@ -50,6 +50,15 @@ int process_intervention (Transaction *t, request_rec *r)
         return N_INTERVENTION_STATUS;
     }
 
+    if (intervention.log != NULL)
+    {
+        /* The message libmodsecurity built for this intervention
+         * ("Access denied with code 403 (phase 2). ..."), so a block
+         * shows up in the error log the way it does with mod_security2
+         * and the nginx connector. */
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "%s", intervention.log);
+    }
+
     if (intervention.status == 301 || intervention.status == 302
         ||intervention.status == 303 || intervention.status == 307)
     {
@@ -57,9 +66,11 @@ int process_intervention (Transaction *t, request_rec *r)
         {
             /* apr_table_set() copies the value into r->pool, unlike
              * apr_table_setn(), so the heap string msc_intervention()
-             * handed us can still be freed below. */
+             * handed us can still be freed below. The configured status
+             * is kept: a redirect:...,status:301 rule must not answer
+             * with a 302. */
             apr_table_set(r->headers_out, "Location", intervention.url);
-            status = HTTP_MOVED_TEMPORARILY;
+            status = intervention.status;
         }
     }
 
@@ -138,6 +149,22 @@ static void store_tx_context(msc_t *msr, request_rec *r)
 }
 
 
+/*
+ * msc_new_transaction() heap-allocates the Transaction and, per
+ * libmodsecurity's own documentation, msc_transaction_cleanup() must be
+ * called once the request is finished or every request leaks the whole
+ * thing (variables, collections, body buffers, rule messages). Tie it to
+ * the request pool. Registered after the per-request merged RulesSet's
+ * cleanup (see msc_config.c), so pool cleanup's LIFO order frees the
+ * Transaction before the rules it points to.
+ */
+static apr_status_t msc_transaction_pool_cleanup(void *data)
+{
+    msc_transaction_cleanup(data);
+    return APR_SUCCESS;
+}
+
+
 static msc_t *create_tx_context(request_rec *r) {
     msc_t *msr = NULL;
     msc_conf_t *z = NULL;
@@ -163,6 +190,11 @@ static msc_t *create_tx_context(request_rec *r) {
         msr->t = msc_new_transaction(msc_apache->modsec,
             z->rules_set, (void *)r);
     }
+    if (msr->t == NULL) {
+        return NULL;
+    }
+    apr_pool_cleanup_register(r->pool, msr->t, msc_transaction_pool_cleanup,
+        apr_pool_cleanup_null);
 
     store_tx_context(msr, r);
 
