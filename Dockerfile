@@ -89,14 +89,20 @@ COPY --from=builder /build/libmodsecurity/unicode.mapping /etc/modsecurity/unico
 RUN sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/modsecurity/modsecurity.conf
 
 RUN cat > /etc/modsecurity/test-rules.conf << 'EOF'
-# Fires on the query string, to check phase 1 / ARGS handling
+# Fires on the query string in phase 1 (request headers), before any body
+# is read, to check the header-phase deny path
 SecRule ARGS:test "@contains evil" \
-    "id:1001,phase:2,deny,status:403,msg:'Test rule triggered'"
+    "id:1001,phase:1,deny,status:403,msg:'Test rule triggered'"
 
 # Fires on the request body, to check that a multi-bucket body is assembled
 # and evaluated exactly once
 SecRule REQUEST_BODY "@rx malicious" \
     "id:1002,phase:2,deny,status:403,msg:'Request body rule triggered'"
+
+# Fires in phase 3 (response headers), i.e. from the output filter, to check
+# that a deny issued there still honours ErrorDocument
+SecRule REQUEST_URI "@beginsWith /phase3" \
+    "id:1003,phase:3,deny,status:403,msg:'Response phase rule triggered'"
 
 # The connector does not write denied requests to the Apache error log
 # (upstream issue #67), and the audit log records one entry per transaction
@@ -118,12 +124,35 @@ LoadModule security3_module /usr/lib/apache2/modules/mod_security3.so
 </IfModule>
 EOF
 
-RUN a2enmod security3 && \
+# A CGI script that echoes the request body back, so the tests can check
+# that the body ModSecurity inspected still reaches the content handler
+# byte for byte (Debian's serve-cgi-bin.conf maps /cgi-bin/ here once cgid
+# is enabled).
+RUN cat > /usr/lib/cgi-bin/echo << 'EOF'
+#!/bin/sh
+echo "Content-Type: application/octet-stream"
+echo ""
+cat
+EOF
+RUN chmod +x /usr/lib/cgi-bin/echo
+
+# Static targets for the ErrorDocument checks: a custom 403 page, and a
+# page that rule 1003 denies in phase 3.
+RUN echo "custom-forbidden-page" > /var/www/html/forbidden.html && \
+    echo "phase3 target" > /var/www/html/phase3.html
+
+RUN a2enmod security3 cgid && \
     sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf && \
     sed -i 's/<VirtualHost \*:80>/<VirtualHost *:8080>/' \
         /etc/apache2/sites-available/000-default.conf && \
+    sed -i 's|</VirtualHost>|\tErrorDocument 403 /forbidden.html\n</VirtualHost>|' \
+        /etc/apache2/sites-available/000-default.conf && \
     echo "ServerName localhost" >> /etc/apache2/apache2.conf
 
+# Debian's apache2ctl runs httpd as a child without exec'ing it, which would
+# leave a shell as PID 1 that ignores docker's SIGTERM; start httpd directly
+# the way the official httpd/php images do, so `docker stop` is a graceful
+# stop rather than a SIGKILL after the grace period.
 RUN cat > /usr/local/bin/start.sh << 'EOF'
 #!/bin/bash
 set -e
@@ -134,8 +163,12 @@ if ! apache2ctl -M 2>&1 | grep -q security3_module; then
     exit 1
 fi
 
+. /etc/apache2/envvars
+mkdir -p "$APACHE_RUN_DIR" "$APACHE_LOCK_DIR" "$APACHE_LOG_DIR"
+rm -f "$APACHE_PID_FILE"
+
 echo "ModSecurity module loaded, starting Apache on :8080"
-exec apache2ctl -DFOREGROUND
+exec apache2 -DFOREGROUND
 EOF
 
 RUN chmod +x /usr/local/bin/start.sh

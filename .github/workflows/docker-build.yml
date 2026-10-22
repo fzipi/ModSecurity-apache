@@ -1,20 +1,33 @@
 name: Docker build
 
+# Runs for every input of the Docker build: the Dockerfile does `COPY . .`
+# and then runs autogen/configure/make, so the autotools files are build
+# inputs too, not just src/.
 on:
   push:
     branches: [master]
     paths:
       - Dockerfile
+      - .dockerignore
       - docker-compose.yml
       - test-connector.sh
       - src/**
+      - build/**
+      - autogen.sh
+      - configure.ac
+      - Makefile.am
       - .github/workflows/docker-build.yml
   pull_request:
     paths:
       - Dockerfile
+      - .dockerignore
       - docker-compose.yml
       - test-connector.sh
       - src/**
+      - build/**
+      - autogen.sh
+      - configure.ac
+      - Makefile.am
       - .github/workflows/docker-build.yml
 
 permissions:

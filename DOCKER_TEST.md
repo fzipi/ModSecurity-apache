@@ -37,6 +37,9 @@ curl -X POST http://localhost:8080/ -d "$(head -c 100000 /dev/zero | tr '\0' 'A'
 Bodies stay under the 128KB `SecRequestBodyNoFilesLimit` from the recommended
 configuration; larger ones are rejected with 413 before the rules run. A 10KB
 body arrives in a single bucket, so it does not exercise multi-bucket handling.
+The test suite's large body puts the `malicious` marker across an 8KB bucket
+boundary, so a connector that evaluated buckets in isolation could not match
+it.
 
 ## Observing rule evaluation
 
@@ -82,21 +85,30 @@ cat /etc/modsecurity/test-rules.conf
 
 ## Expected Results
 
-All 6 checks in `test-connector.sh` pass:
+All checks in `test-connector.sh` pass:
 
 1. Normal request — 200
-2. Query string block — 403
+2. Query string block (phase 1) — 403, served from the `ErrorDocument`
 3. Request body block — 403
 4. Normal POST — 200
 5. Large POST — 200
-6. Large POST with a match — 403
+6. Large POST with a match straddling a bucket boundary — 403
+7. Chunked POST with a match — 403
+8. Response-phase block (phase 3, from the output filter) — 403, served
+   from the `ErrorDocument`
+9. Large POST body reaches a CGI handler byte for byte
+10. Chunked POST body reaches a CGI handler byte for byte
 
 Test 6 additionally reports the request-body phase count described above.
+Tests 9 and 10 use `/cgi-bin/echo`, a CGI script that writes the request
+body back, so they catch a connector that inspects the body but fails to
+hand it on to the real content handler.
 
 ## What's Included
 
 - **libmodsecurity** v3.0.16, built from the pinned release tag
-- **Apache HTTP Server** 2.4.68, from Debian bookworm
+- **Apache HTTP Server**, whatever `apache2` Debian bookworm currently
+  ships (not pinned; it moves with Debian's security updates)
 - **ModSecurity Apache Connector**, built from this working tree
 
 The recommended ModSecurity configuration is copied out of the same

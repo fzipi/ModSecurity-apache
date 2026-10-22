@@ -1,0 +1,16 @@
+# Keep the build context to the source tree: everything else only busts the
+# connector build layer's cache (COPY . .) and bloats the context.
+.git
+.github
+.worktrees
+logs/
+*.so
+*.o
+*.lo
+*.la
+*.lai
+.libs/
+.deps/
+autom4te.cache/
+config.log
+config.status
