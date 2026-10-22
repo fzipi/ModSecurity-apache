@@ -51,15 +51,12 @@ typedef struct
 {
     request_rec *r;
     Transaction *t;
-    int request_body_processed;  /* Flag to track if body was processed */
-    apr_bucket_brigade *body_replay_bb;  /* Buffered body for replay to the
-                                           * real content handler, since
-                                           * hook_request_late consumes the
-                                           * body from the network first.
-                                           * ponytail: whole body buffered in
-                                           * RAM alongside libmodsecurity's
-                                           * own copy; spool to a temp file
-                                           * if large uploads matter. */
+    /* Request body as read off the network by hook_request_late, kept
+     * for MODSECURITY_IN to replay to the real content handler. Bounded
+     * by SecRequestBodyLimit (reading stops there) and LimitRequestBody.
+     * TODO: this is a second in-RAM copy next to libmodsecurity's own;
+     * spool to a temp file if large uploads matter. */
+    apr_bucket_brigade *body_replay_bb;
 } msc_t;
 
 

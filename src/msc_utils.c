@@ -21,8 +21,10 @@ apr_status_t send_error_bucket(msc_t *msr, ap_filter_t *f, int status)
     apr_bucket_brigade *brigade = NULL;
     apr_bucket *bucket = NULL;
 
-    /* Set both status code and status line */
-    f->r->status = status;
+    /* Set the status line explicitly for the error document. The status
+     * itself is left to ap_die(), which the error bucket below triggers:
+     * if r->status were already an error there, httpd would treat this as
+     * a recursive error and skip any configured ErrorDocument. */
     f->r->status_line = ap_get_status_line(status);
 
     brigade = apr_brigade_create(f->r->pool, f->r->connection->bucket_alloc);

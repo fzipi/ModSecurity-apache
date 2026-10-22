@@ -21,4 +21,6 @@ apr_status_t output_filter(ap_filter_t *f, apr_bucket_brigade *bb_in);
 apr_status_t input_filter(ap_filter_t *f, apr_bucket_brigade *bb_out,
         ap_input_mode_t mode, apr_read_type_e block, apr_off_t nbytes);
 
+int msc_read_request_body(msc_t *msr);
+
 #endif  /* _SRC_MSC_FILTERS__ */

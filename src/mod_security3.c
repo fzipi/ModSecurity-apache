@@ -145,8 +145,8 @@ static msc_t *create_tx_context(request_rec *r) {
     }
 
     msr->r = r;
-    msr->request_body_processed = 0;  /* Initialize flag */
-    msr->body_replay_bb = apr_brigade_create(r->pool, r->connection->bucket_alloc);
+    msr->body_replay_bb = apr_brigade_create(r->pool,
+        r->connection->bucket_alloc);
 
     unique_id = getenv("UNIQUE_ID");
     if (unique_id != NULL && strlen(unique_id) > 0) {
@@ -342,8 +342,11 @@ static int hook_request_early(request_rec *r) {
 }
 
 /**
- * Invoked as the first hook in the handler chain, this function
- * executes the second phase of ModSecurity request processing.
+ * Invoked as the first fixups hook, this function executes the
+ * second phase of ModSecurity request processing: it reads the whole
+ * request body (so the rules see it assembled, and evaluate it once)
+ * and leaves a copy behind for the input filter to replay to the real
+ * content handler.
  */
 static int hook_request_late(request_rec *r)
 {
@@ -368,17 +371,17 @@ static int hook_request_late(request_rec *r)
     /* Find the transaction context and make sure
      * we are supposed to proceed.
      */
+#ifdef REQUEST_EARLY
     msr = retrieve_tx_context(r);
+#else
+    msr = create_tx_context(r);
+#endif
     if (msr == NULL)
     {
-        /* Context should have been created by hook_insert_filter,
-         * but create it now if it doesn't exist for some reason.
+        /* If we can't find the context that probably means it's
+         * a subrequest that was not initiated from the outside.
          */
-        msr = create_tx_context(r);
-        if (msr == NULL)
-        {
-            return DECLINED;
-        }
+        return DECLINED;
     }
 
 #ifdef LATE_CONNECTION_PROCESS
@@ -402,52 +405,17 @@ static int hook_request_late(request_rec *r)
     }
 #endif
 
-
-    /* Set up to read the request body.
-     * This is necessary to trigger the input filter which buffers the body.
+    /* Request body: read all of it now, straight from the network, and
+     * run the rules over it once it is complete. The copy kept in
+     * msr->body_replay_bb is replayed to the content handler by
+     * MODSECURITY_IN, which hook_insert_filter adds right after fixups.
      */
-    int rc = ap_setup_client_block(r, REQUEST_CHUNKED_ERROR);
-    if (rc != OK)
+    it = msc_read_request_body(msr);
+    if (it != OK)
     {
-        return rc;
+        return it;
     }
 
-    /* If there's a request body, read it to trigger the input filter */
-    if (ap_should_client_block(r))
-    {
-        char buffer[HUGE_STRING_LEN];
-        apr_off_t len;
-
-        /* Read body using the simpler ap_get_client_block API
-         * This should trigger our input filter for each chunk */
-        while ((len = ap_get_client_block(r, buffer, sizeof(buffer))) > 0)
-        {
-            /* The input filter intercepts this and appends to ModSecurity */
-            /* We don't need to do anything with the data here */
-        }
-
-        if (len == -1)
-        {
-            return HTTP_BAD_REQUEST;
-        }
-
-        /* ap_get_client_block() marks the classic client-block API as
-         * exhausted once it sees EOS (r->read_length becomes non-zero and
-         * r->remaining drops to 0), so a later handler calling
-         * ap_should_client_block()/ap_get_client_block() itself (e.g.
-         * mod_cgi) would see "no body" even though the input filter is
-         * holding a buffered copy ready to replay. Reset that bookkeeping
-         * so those handlers still read the body. (Chunked bodies never
-         * reach here: REQUEST_CHUNKED_ERROR above rejects them outright.) */
-        r->read_length = 0;
-        r->remaining = 1;
-    }
-
-    /* Process request body.
-     * The input filter has buffered body data during ap_get_brigade above.
-     * Now we process it. This handler can properly return HTTP status codes
-     * for interventions, unlike the input filter.
-     */
     msc_process_request_body(msr->t);
 
     it = process_intervention(msr->t, r);
@@ -497,21 +465,21 @@ static void hook_insert_filter(request_rec *r)
 {
     msc_t *msr = NULL;
 
-    /* Find the transaction context, or create it if it doesn't exist yet. */
+    /* Find the transaction context first. */
     msr = retrieve_tx_context(r);
     if (msr == NULL)
     {
-        msr = create_tx_context(r);
-        if (msr == NULL)
-        {
-            return;
-        }
+        return;
     }
 
-#if 1
-    /* Add the input filter, but only if we need it to run. */
-    ap_add_input_filter("MODSECURITY_IN", msr, r, r->connection);
-#endif
+    /* Add the input filter, but only while there is a body left to
+     * replay. Subrequests and internal redirects get their own filter
+     * chain, so they get their own instance too; all of them share the
+     * one replay buffer in msr. */
+    if (!APR_BRIGADE_EMPTY(msr->body_replay_bb))
+    {
+        ap_add_input_filter("MODSECURITY_IN", msr, r, r->connection);
+    }
 
     /* The output filters only need to be added only once per transaction
      * (i.e. subrequests and redirects are excluded).
@@ -624,9 +592,7 @@ static void msc_register_hooks(apr_pool_t *pool)
     /* still, we don't have location configuration yet. */
     ap_hook_process_connection(hook_connection_early, NULL, NULL, APR_HOOK_FIRST);
 
-    /* Register as handler to read request body in the proper phase
-     * Don't use fixups - body reading must happen in handler phase */
-    ap_hook_handler(hook_request_late, NULL, NULL, APR_HOOK_REALLY_FIRST);
+    ap_hook_fixups(hook_request_late, fixups_beforeme_list, NULL, APR_HOOK_REALLY_FIRST);
 
     /* Lets add the remaining hooks */
     ap_hook_insert_filter(hook_insert_filter, NULL, NULL, APR_HOOK_FIRST);
