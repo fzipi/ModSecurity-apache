@@ -1,10 +1,12 @@
 name: Valgrind soak
 
 # Manual/scheduled only, not on every PR: a memcheck/helgrind soak runs
-# 10-50x slower than native and this connector has known open memory leaks
-# (see docs/TODO.md / issue #82), so this job is expected to fail until
-# those are fixed. It exists to keep the leak/race findings visible, not to
-# gate merges. See tools/soak.sh.
+# 10-50x slower than native. The memcheck job is non-gating until #94
+# lands: the connector leaks the rules_set on every graceful restart
+# (issue #82), the intervention log/url strings on every blocked request,
+# and the whole Transaction on every request, all of which #94 fixes; with
+# those in, the same run is clean and continue-on-error can go. The
+# helgrind job gates on crashes and WAF verdicts only. See tools/soak.sh.
 on:
   workflow_dispatch:
     inputs:
@@ -28,6 +30,7 @@ jobs:
   memcheck:
     name: memcheck soak
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -40,23 +43,34 @@ jobs:
       - name: Build soak image
         run: docker build -f Dockerfile.fuzz -t modsec3-soak .
 
-      # Non-gating for now: the connector has open leaks this soak correctly
-      # finds (issue #82's rules_set leak, and the per-request intervention
-      # leak). Drop continue-on-error once those are fixed.
+      # Non-gating until #94 lands (see the header). The full logs are copied
+      # to soak-logs/ on exit (SOAK_LOG_DIR) and uploaded below, so a finding
+      # can be triaged from the CI run.
       - name: Run memcheck soak
         continue-on-error: true
         env:
           DURATION: ${{ github.event.inputs.duration || '120' }}
           CONCURRENCY: ${{ github.event.inputs.concurrency || '8' }}
         run: |
+          mkdir -p soak-logs
           docker run --rm --cap-add=SYS_PTRACE \
-            -e USE_VALGRIND=1 \
+            -e USE_VALGRIND=1 -e SOAK_LOG_DIR=/soak-logs \
+            -v "$PWD/soak-logs:/soak-logs" \
             modsec3-soak /usr/sbin/apache2 \
             "$DURATION" "$CONCURRENCY"
+
+      - name: Upload memcheck logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: memcheck-soak-logs
+          path: soak-logs
+          if-no-files-found: ignore
 
   helgrind:
     name: helgrind soak
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -72,12 +86,26 @@ jobs:
       # Gating: soak.sh reports helgrind findings without failing on them, so
       # a non-zero exit here means a crash, a bad httpd exit, or a WAF verdict
       # regression -- all of which should go red.
+      # The script only prints a summary; the full helgrind logs needed to
+      # classify a surviving race (both sides of the conflicting access) are
+      # copied to soak-logs/ and uploaded so the triage described in
+      # tools/valgrind.suppress can be done from a CI run.
       - name: Run helgrind soak
         env:
           DURATION: ${{ github.event.inputs.duration || '120' }}
           CONCURRENCY: ${{ github.event.inputs.concurrency || '8' }}
         run: |
+          mkdir -p soak-logs
           docker run --rm --cap-add=SYS_PTRACE \
-            -e USE_HELGRIND=1 \
+            -e USE_HELGRIND=1 -e SOAK_LOG_DIR=/soak-logs \
+            -v "$PWD/soak-logs:/soak-logs" \
             modsec3-soak /usr/sbin/apache2 \
             "$DURATION" "$CONCURRENCY"
+
+      - name: Upload helgrind logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: helgrind-soak-logs
+          path: soak-logs
+          if-no-files-found: ignore

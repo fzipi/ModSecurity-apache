@@ -8,7 +8,14 @@
 # soak.sh only fails on "definitely lost", so no memcheck suppressions are
 # needed here; add one only after confirming via --gen-suppressions=all that
 # it is genuine third-party noise and not something the connector or
-# libmodsecurity should be freeing.
+# libmodsecurity should be freeing. (The connector's own known leaks -- the
+# rules_set per graceful restart, the intervention log/url strings, and the
+# Transaction itself -- are deliberately not suppressed: they are fixed in
+# #94 and the memcheck job stays non-gating until that lands.)
+#
+# PCRE2 JIT's uninitialised-value false positives are handled with
+# --undef-value-errors=no in soak.sh rather than here: the JIT frames carry
+# no symbol or object name a suppression could match.
 #
 # ---------------------------------------------------------------------------
 # helgrind
@@ -21,10 +28,17 @@
 # reports whose racing frames are entirely inside httpd, its MPM, or APR.
 #
 # The entries below drop those, so what remains in a helgrind report is
-# attributable to the connector. They match on the *racing* frame, not on
-# callers, so a genuine connector race is still reported even when it reaches
-# APR further down the stack -- connector frames appear in these stacks only
-# because the connector called into httpd, which is not evidence of a bug.
+# attributable to the connector. They match on the *racing* frame (frame 0,
+# or frame 1 behind a valgrind interceptor), not on callers. That cuts both
+# ways: a connector race whose actual access is performed inside APR or
+# httpd on the connector's behalf -- say two threads calling apr_table_setn()
+# or apr_pstrdup() on shared connector state -- has libapr at frame 0 and is
+# suppressed along with the noise. What stays visible is a race whose racing
+# instruction is in mod_security3.so or libmodsecurity itself. Keep that
+# blind spot in mind when reading a clean report, and narrow the APR entries
+# to the specific noisy functions if that ever matters. Connector frames
+# further down a suppressed stack are not evidence of a bug either: the
+# connector calls into httpd constantly.
 #
 # Triage of what survives (30s soak, concurrency 4, ~50 contexts): every
 # instance with a connector frame at the top -- 106 of them across a run --
