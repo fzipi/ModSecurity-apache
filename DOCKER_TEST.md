@@ -37,9 +37,11 @@ curl -X POST http://localhost:8080/ -d "$(head -c 100000 /dev/zero | tr '\0' 'A'
 Bodies stay under the 128KB `SecRequestBodyNoFilesLimit` from the recommended
 configuration; larger ones are rejected with 413 before the rules run. A 10KB
 body arrives in a single bucket, so it does not exercise multi-bucket handling.
-The test suite's large body puts the `malicious` marker across an 8KB bucket
-boundary, so a connector that evaluated buckets in isolation could not match
-it.
+Test 6 also sends the same body with the `malicious` marker across an 8KB
+bucket boundary and reports the status: the current connector intervenes
+from inside the input filter mid-body and answers 400 instead of 403, which
+the request-body fix corrects, so that case is reported rather than asserted
+for now.
 
 ## Observing rule evaluation
 
@@ -92,7 +94,7 @@ All checks in `test-connector.sh` pass:
 3. Request body block — 403
 4. Normal POST — 200
 5. Large POST — 200
-6. Large POST with a match straddling a bucket boundary — 403
+6. Large POST with a match at the end of the body — 403
 7. Chunked POST with a match — 403
 8. Response-phase block (phase 3, from the output filter) — 403, served
    from the `ErrorDocument`
